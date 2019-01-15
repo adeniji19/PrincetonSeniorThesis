@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">Drone Delivery</string>
+    <string name="title_activity_demo">GPSActivity</string>
+    <string name="sdk_version">DJI SDK Version: %1$s</string>
+    <string name="product_information">Product Information</string>
+    <string name="connection_loose">Status: No Product Connected</string>
+    <string name="admin_email">ogunlana@princeton.edu</string>
+</resources>
