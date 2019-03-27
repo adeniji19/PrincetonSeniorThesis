@@ -20,8 +20,6 @@ import dji.sdk.sdkmanager.DJISDKManager;
 public class DJIApplication extends Application {
 
 
-    private static final String TAG = DJIApplication.class.getName();
-
     public static final String FLAG_CONNECTION_CHANGE = "dji_sdk_connection_change";
 
     private DJISDKManager.SDKManagerCallback mDJISDKManagerCallback;

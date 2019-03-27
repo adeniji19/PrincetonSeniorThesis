@@ -27,6 +27,7 @@ android {
     externalNativeBuild {
         cmake {
             path "CMakeLists.txt"
+            version "3.10.2"
         }
     }
     packagingOptions{
@@ -55,13 +56,13 @@ dependencies {
 
     testImplementation 'junit:junit:4.12'
 
-    compile 'com.google.firebase:firebase-auth:16.1.0'
-    compile 'com.google.firebase:firebase-core:16.0.6'
-    compile 'com.google.firebase:firebase-database:16.0.5'
-    compile 'com.google.android.gms:play-services-auth:16.0.0'
+    implementation 'com.google.firebase:firebase-auth:16.1.0'
+    implementation 'com.google.firebase:firebase-core:16.0.6'
+    implementation 'com.google.firebase:firebase-database:16.0.5'
+    implementation 'com.google.android.gms:play-services-auth:16.0.0'
 
-    compile 'com.android.support:multidex:1.0.1'
-    compile ('com.dji:dji-sdk:4.8.1')
-    provided ('com.dji:dji-sdk-provided:4.8.1')
+    implementation 'com.android.support:multidex:1.0.1'
+    implementation ('com.dji:dji-sdk:4.8.1')
+    compileOnly ('com.dji:dji-sdk-provided:4.8.1')
 }
 apply plugin: 'com.google.gms.google-services'

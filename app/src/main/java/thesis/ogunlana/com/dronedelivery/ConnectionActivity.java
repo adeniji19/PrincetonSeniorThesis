@@ -41,7 +41,6 @@ public class ConnectionActivity extends Activity implements View.OnClickListener
 
     private static final String TAG = ConnectionActivity.class.getName();
 
-    private TextView testText;
     private TextView mTextConnectionStatus;
     private TextView mTextProduct;
     private TextView mVersionTv;
