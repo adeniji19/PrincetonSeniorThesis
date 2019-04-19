@@ -35,5 +35,13 @@
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:text="200 Elm (Public Safety)" />
+
+        <Button
+            android:id="@+id/rugbyBtn"
+            style="@android:style/Widget.DeviceDefault.Light.Button.Inset"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Rugby Field (Testing)" />
     </LinearLayout>
 </LinearLayout>

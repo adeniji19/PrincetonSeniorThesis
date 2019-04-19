@@ -36,10 +36,14 @@ import com.google.firebase.database.DatabaseReference;
 import com.google.firebase.database.FirebaseDatabase;
 import com.google.firebase.database.ValueEventListener;
 
+import java.text.DateFormat;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TimeZone;
 import java.util.Timer;
 import java.util.TimerTask;
 import java.util.concurrent.ConcurrentHashMap;
@@ -66,9 +70,11 @@ import dji.sdk.products.Aircraft;
 import dji.sdk.sdkmanager.DJISDKManager;
 import dji.sdk.useraccount.UserAccountManager;
 
-public class MainActivity extends FragmentActivity implements View.OnClickListener, GoogleMap.OnMapClickListener, OnMapReadyCallback, ValueEventListener {
+public class MainActivity extends FragmentActivity implements View.OnClickListener,
+        GoogleMap.OnMapClickListener, OnMapReadyCallback, ValueEventListener {
 
     protected static final String TAG = "MainActivity";
+    // Drone Locations
     private static String[][] pickUpSpots = new String[][]{
             new String[]{"Scully Courtyard", "40.344517", "-74.654794"},
             new String[]{"Yoseloff Courtyard", "40.344065", "-74.656240"},
@@ -83,47 +89,67 @@ public class MainActivity extends FragmentActivity implements View.OnClickListen
             new String[]{"Rockefeller Courtyard", "40.348558", "-74.661565"},
             new String[]{"Hamilton Courtyard", "40.348329", "-74.662161"},
             new String[]{"Wilson Courtyard", "40.345336", "-74.656016"},
-            new String[]{"1903 Courtyard", "40.346023", "-74.657142"}
+            new String[]{"1903 Courtyard", "40.346023", "-74.657142"},
+            new String[]{"Rugby Field Drop", "40.338802", "-74.643799"},
+            new String[]{"Poe Field Drop", "40.343500", "-74.653576"}
     };
     private static String[][] commandLocations = new String[][]{
             new String[]{"Frist", "40.346355", "-74.654842"},
-            new String[]{"PSafe", "40.342877", "-74.656820"}
+            new String[]{"PSafe", "40.342877", "-74.656820"},
+            new String[]{"Rugby Field", "40.338281", "-74.643868"},
+            new String[]{"Poe Field", "40.343278", "-74.653905"}
     };
+    private final String[] shapes = {"LINE", "TRIANGLE", "SQUARE", "ZIGZAG"};
 
-    private GoogleMap gMap;
-
-    private Button locate, add, clear, commandLoc;
-    private Button config, returnHome, start, clearRequest;
+    //==============================================================================================
+    //
+    // VARIABLES
+    //
+    //==============================================================================================
+    // UI Variables
+    private Button locate, add, clear, commandLoc, config, returnHome, start, clearRequest;
     private TextView destinationText, confirmationIdText;
-
-    private boolean isAdd = false;
-    private boolean isStart = false;
+    private boolean isAdd = false, isStart = false;
     private int idCount = 0;
     private boolean destAdded = false;
     private String commandLocText = "Frist";
-    private HashMap<String, String> currentRequest;
 
+    // Google Map Variables
     private LatLng droneLocation = new LatLng(29.650744, -98.427593);
     private final Map<Integer, Marker> mMarkers = new ConcurrentHashMap<Integer, Marker>();
     private Marker droneMarker = null;
+    private GoogleMap gMap;
 
+    // Default Drone Settings
     private float altitude = 40.0f;
     private float mSpeed = 10.0f;
 
-    private final String[] shapes = {"LINE", "TRIANGLE", "SQUARE", "ZIGZAG"};
-
+    // Drone Control Variables
     private List<Waypoint> waypointList = new ArrayList<>();
-
     public static WaypointMission.Builder waypointMissionBuilder;
     private FlightController mFlightController;
     private WaypointMissionOperator instance;
     private WaypointMissionFinishedAction mFinishedAction = WaypointMissionFinishedAction.NO_ACTION;
+    private boolean returning = false;
     private WaypointMissionHeadingMode mHeadingMode = WaypointMissionHeadingMode.AUTO;
+    protected BroadcastReceiver mReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            onProductConnectionChange();
+        }
+    };
 
+    // Firebase Variables
     private FirebaseDatabase firebaseDatabase = FirebaseDatabase.getInstance();
     private DatabaseReference mRootReference = firebaseDatabase.getReference();
     private DatabaseReference deliveryRequest = mRootReference.child("users");
+    private HashMap<String, String> currentRequest;
 
+    //==============================================================================================
+    //
+    // ANDROID APP NECESSARY DEFAULT METHODS
+    //
+    //==============================================================================================
     @Override
     protected void onResume(){
         super.onResume();
@@ -142,14 +168,35 @@ public class MainActivity extends FragmentActivity implements View.OnClickListen
         super.onDestroy();
     }
 
-    /**
-     * @Description : RETURN Button RESPONSE FUNCTION
-     */
-    public void onReturn(View view){
-        Log.d(TAG, "onReturn");
-        this.finish();
+    public void onReturn(View view){ this.finish(); }
+
+    //==============================================================================================
+    //
+    // HELPER METHODS
+    //
+    //==============================================================================================
+
+    // find midpoint between two points on earth
+    public static LatLng midPoint(double lat1,double lon1,double lat2,double lon2){
+
+        double dLon = Math.toRadians(lon2 - lon1);
+
+        //convert to radians
+        lat1 = Math.toRadians(lat1);
+        lat2 = Math.toRadians(lat2);
+        lon1 = Math.toRadians(lon1);
+
+        double Bx = Math.cos(lat2) * Math.cos(dLon);
+        double By = Math.cos(lat2) * Math.sin(dLon);
+        double lat3 = Math.atan2(Math.sin(lat1) + Math.sin(lat2), Math.sqrt((Math.cos(lat1) + Bx) * (Math.cos(lat1) + Bx) + By * By));
+        double lon3 = lon1 + Math.atan2(By, Math.cos(lat1) + Bx);
+
+        //print out in degrees
+        //System.out.println(Math.toDegrees(lat3) + " " + Math.toDegrees(lon3));
+        return new LatLng(Math.toDegrees(lat3), Math.toDegrees(lon3));
     }
 
+    // Helper Method for printing toast messages
     private void setResultToToast(final String string){
         MainActivity.this.runOnUiThread(new Runnable() {
             @Override
@@ -159,6 +206,62 @@ public class MainActivity extends FragmentActivity implements View.OnClickListen
         });
     }
 
+    // Convert String location into LatLng location
+    private LatLng getPointFromString(String destText, String[][] locations) {
+        //Log.d(TAG, "getPointFromString: " + destText);
+        for(String[] loc : locations) {
+            if(destText.equals(loc[0])) {
+                return new LatLng(Double.parseDouble(loc[1]), Double.parseDouble(loc[2]));
+            }
+        }
+        return new LatLng(0,0);
+    }
+
+    // check string contains only an integer
+    private String nulltoIntegerDefault(String value){
+        if(!isIntValue(value)) value="0";
+        return value;
+    }
+    // helper for nulltoIntegerDefault
+    private boolean isIntValue(String val)
+    {
+        try {
+            val=val.replace(" ","");
+            Integer.parseInt(val);
+        } catch (Exception e) {return false;}
+        return true;
+    }
+
+    // Check valid GPS Coordinate
+    private static boolean checkGpsCoordination(double latitude, double longitude) {
+        return (latitude > -90 && latitude < 90 && longitude > -180 && longitude < 180)
+                && (latitude != 0f && longitude != 0f);
+    }
+
+    // inside designated area near the dropLocation?
+    private boolean closeEnoughForHumanID(LatLng drop, LatLng drone) {
+        double range = 0.000005;
+
+        double longDif = drop.longitude - drone.longitude;
+        longDif = (longDif > 0) ? longDif : -1*longDif;
+        double latDif = drop.latitude - drone.latitude;
+        latDif = (latDif > 0) ? latDif : -1*latDif;
+        if(longDif < range && latDif < range)
+            return true;
+        return false;
+    }
+
+    // Handle enable and disabling add button
+    private void enableDisableAdd(){
+        if (!isAdd) {
+            isAdd = true;
+        }else{
+            isAdd = false;
+            add.setText("Add");
+        }
+    }
+
+    // Initialize all UI variables
     private void initUI() {
 
         locate = (Button) findViewById(R.id.locate);
@@ -183,24 +286,75 @@ public class MainActivity extends FragmentActivity implements View.OnClickListen
         confirmationIdText = (TextView) findViewById(R.id.confirmationId);
     }
 
+    // Clear all images (markers & package image) on Google Map
+    private void clearMap() {
+        returning = false;
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                gMap.clear();
+            }
+        });
+    }
+
+    // Make thread sleep
+    private void sleep(int secs) {
+        try
+        {
+            Thread.sleep(secs);
+        }
+        catch(InterruptedException ex)
+        {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    // Update student request node in firebase database
+    private void createRequestNode(String netid, String code, String identity, String droplocation, double lat, double lng, String time) {
+        netid = netid.replaceAll("\\.","");
+        deliveryRequest.child(netid).child("code").setValue(code);
+        deliveryRequest.child(netid).child("netid").setValue(netid);
+        deliveryRequest.child(netid).child("identity").setValue(identity);
+        deliveryRequest.child(netid).child("droplocation").setValue(droplocation);
+        deliveryRequest.child(netid).child("dronelocationlat").setValue(Double.toString(lat));
+        deliveryRequest.child(netid).child("dronelocationlng").setValue(Double.toString(lng));
+        deliveryRequest.child(netid).child("time").setValue(time);
+        deliveryRequest.child(netid).child("shape").setValue("null");
+    }
+
+    // Add marker to google map
+    private void markWaypoint(LatLng point){
+        //Create MarkerOptions object
+        MarkerOptions markerOptions = new MarkerOptions();
+        markerOptions.position(point);
+        markerOptions.icon(BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_BLUE));
+        Marker marker = gMap.addMarker(markerOptions);
+        mMarkers.put(mMarkers.size(), marker);
+    }
+
+    //==============================================================================================
+    //
+    // MAIN CODE
+    //
+    //==============================================================================================
+
+    // onCreate to initialize MainActivity
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-
         // When the compile and target version is higher than 22, please request the
         // following permissions at runtime to ensure the
         // SDK work well.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             ActivityCompat.requestPermissions(this,
-                    new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE, Manifest.permission.VIBRATE,
-                            Manifest.permission.INTERNET, Manifest.permission.ACCESS_WIFI_STATE,
-                            Manifest.permission.WAKE_LOCK, Manifest.permission.ACCESS_COARSE_LOCATION,
-                            Manifest.permission.ACCESS_NETWORK_STATE, Manifest.permission.ACCESS_FINE_LOCATION,
-                            Manifest.permission.CHANGE_WIFI_STATE, Manifest.permission.MOUNT_UNMOUNT_FILESYSTEMS,
-                            Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.SYSTEM_ALERT_WINDOW,
-                            Manifest.permission.READ_PHONE_STATE,
-                    }
-                    , 1);
+                new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE, Manifest.permission.VIBRATE,
+                    Manifest.permission.INTERNET, Manifest.permission.ACCESS_WIFI_STATE,
+                    Manifest.permission.WAKE_LOCK, Manifest.permission.ACCESS_COARSE_LOCATION,
+                    Manifest.permission.ACCESS_NETWORK_STATE, Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.CHANGE_WIFI_STATE, Manifest.permission.MOUNT_UNMOUNT_FILESYSTEMS,
+                    Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.SYSTEM_ALERT_WINDOW,
+                    Manifest.permission.READ_PHONE_STATE,
+                }, 1);
         }
 
         setContentView(R.layout.activity_main);
@@ -219,171 +373,7 @@ public class MainActivity extends FragmentActivity implements View.OnClickListen
 
     }
 
-    protected BroadcastReceiver mReceiver = new BroadcastReceiver() {
-
-        @Override
-        public void onReceive(Context context, Intent intent) {
-            onProductConnectionChange();
-        }
-    };
-
-    private void onProductConnectionChange()
-    {
-        initFlightController();
-        loginAccount();
-    }
-
-    private void loginAccount(){
-
-        UserAccountManager.getInstance().logIntoDJIUserAccount(this,
-                new CommonCallbacks.CompletionCallbackWith<UserAccountState>() {
-                    @Override
-                    public void onSuccess(final UserAccountState userAccountState) {
-                        Log.e(TAG, "Login Success");
-                    }
-                    @Override
-                    public void onFailure(DJIError error) {
-                        setResultToToast("Login Error:"
-                                + error.getDescription());
-                    }
-                });
-    }
-
-    private void initFlightController() {
-
-        BaseProduct product = DJIApplication.getProductInstance();
-        if (product != null && product.isConnected()) {
-            if (product instanceof Aircraft) {
-                mFlightController = ((Aircraft) product).getFlightController();
-            }
-        }
-
-        if (mFlightController != null) {
-            mFlightController.setStateCallback(new FlightControllerState.Callback() {
-
-                @Override
-                public void onUpdate(FlightControllerState djiFlightControllerCurrentState) {
-                    double droneLocationLat = djiFlightControllerCurrentState.getAircraftLocation().getLatitude();
-                    double droneLocationLng = djiFlightControllerCurrentState.getAircraftLocation().getLongitude();
-                    droneLocation = new LatLng(droneLocationLat, droneLocationLng);
-                    updateDroneLocation();
-                }
-            });
-        }
-        else
-        {
-            Toast.makeText(this, "PROBLEM", Toast.LENGTH_LONG);
-        }
-    }
-
-    //Add Listener for WaypointMissionOperator
-    private void addListener() {
-        if (getWaypointMissionOperator() != null){
-            getWaypointMissionOperator().addListener(eventNotificationListener);
-        }
-    }
-
-    private void removeListener() {
-        if (getWaypointMissionOperator() != null) {
-            getWaypointMissionOperator().removeListener(eventNotificationListener);
-        }
-    }
-
-    private WaypointMissionOperatorListener eventNotificationListener = new WaypointMissionOperatorListener() {
-        @Override
-        public void onDownloadUpdate(WaypointMissionDownloadEvent downloadEvent) { }
-
-        @Override
-        public void onUploadUpdate(WaypointMissionUploadEvent uploadEvent) { }
-
-        @Override
-        public void onExecutionUpdate(WaypointMissionExecutionEvent executionEvent) { }
-
-        @Override
-        public void onExecutionStart() { }
-
-        @Override
-        public void onExecutionFinish(@Nullable final DJIError error) {
-            setResultToToast("Execution finished: " + (error == null ? "Success!" : error.getDescription()));
-        }
-    };
-
-    public WaypointMissionOperator getWaypointMissionOperator() {
-        if (instance == null) {
-            if (DJISDKManager.getInstance().getMissionControl() != null){
-                instance = DJISDKManager.getInstance().getMissionControl().getWaypointMissionOperator();
-            }
-        }
-        return instance;
-    }
-
-    private void setUpMap() {
-        gMap.setOnMapClickListener(this);// add the listener for click for amap object
-
-    }
-
-    @Override
-    public void onMapClick(LatLng point) {
-        setResultToToast("Cannot Add Waypoint Manually");
-    }
-
-    private static boolean checkGpsCoordination(double latitude, double longitude) {
-        return (latitude > -90 && latitude < 90 && longitude > -180 && longitude < 180) && (latitude != 0f && longitude != 0f);
-    }
-
-    // Update the drone location based on states from MCU.
-    private void updateDroneLocation(){
-        //Create MarkerOptions object
-        final MarkerOptions markerOptions = new MarkerOptions();
-        markerOptions.position(droneLocation);
-        markerOptions.icon(BitmapDescriptorFactory.fromResource(R.drawable.box_package));
-
-        runOnUiThread(new Runnable() {
-            @Override
-            public void run() {
-                if (droneMarker != null) {
-                    droneMarker.remove();
-                }
-
-                if (checkGpsCoordination(droneLocation.latitude, droneLocation.longitude)) {
-                    droneMarker = gMap.addMarker(markerOptions);
-                }
-            }
-        });
-        if(deliveryRequest != null && currentRequest != null  && currentRequest.containsKey("netid") && droneLocation != null) {
-            deliveryRequest.child(currentRequest.get("netid")).child("dronelocationlat").setValue(Double.toString(droneLocation.latitude));
-            deliveryRequest.child(currentRequest.get("netid")).child("dronelocationlng").setValue(Double.toString(droneLocation.longitude));
-        }
-        if(currentRequest != null && currentRequest.containsKey("droplocation") && droneLocation != null) {
-            LatLng droplocation = getPointFromString(currentRequest.get("droplocation"), pickUpSpots);
-            if (closeEnoughForHumanID(droplocation, droneLocation) && idCount < 2) {
-                idCount++;
-                humanID(droneLocation);
-            }
-        }
-    }
-
-    private boolean closeEnoughForHumanID(LatLng drop, LatLng drone) {
-        double range = 0.000005;
-
-        double longDif = drop.longitude - drone.longitude;
-        longDif = (longDif > 0) ? longDif : -1*longDif;
-        double latDif = drop.latitude - drone.latitude;
-        latDif = (latDif > 0) ? latDif : -1*latDif;
-        if(longDif < range && latDif < range)
-            return true;
-        return false;
-    }
-
-    private void markWaypoint(LatLng point){
-        //Create MarkerOptions object
-        MarkerOptions markerOptions = new MarkerOptions();
-        markerOptions.position(point);
-        markerOptions.icon(BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_BLUE));
-        Marker marker = gMap.addMarker(markerOptions);
-        mMarkers.put(mMarkers.size(), marker);
-    }
-
+    // Handle All Button Clicks
     @Override
     public void onClick(View v) {
         switch (v.getId()) {
@@ -400,7 +390,7 @@ public class MainActivity extends FragmentActivity implements View.OnClickListen
             case R.id.clear:{
                 clearMap();
                 destAdded = false;
-                if (isAdd == true) {
+                if (isAdd) {
                     isAdd = false;
                 }
                 if(waypointList != null && waypointMissionBuilder != null) {
@@ -446,71 +436,26 @@ public class MainActivity extends FragmentActivity implements View.OnClickListen
                 commandLoc.setText("COMMAND LOCATION: FRIST");
                 break;
             }
+            case R.id.rugbyBtn: {
+                commandLocText = "Rugby Field";
+                commandLoc.setText("COMMAND LOCATION: Rugby");
+                break;
+            }
             default:
                 break;
         }
     }
 
-    private void clearMap() {
-        runOnUiThread(new Runnable() {
-            @Override
-            public void run() {
-                gMap.clear();
-            }
-        });
+    // Center google map camera on droneLocation
+    private void cameraUpdate(){
+        float zoomlevel = (float) 18.0;
+        CameraUpdate cu = CameraUpdateFactory.newLatLngZoom(droneLocation, zoomlevel);
+        gMap.moveCamera(cu);
     }
 
-    private void clearRequest() {
-        // delete request from database
-        Log.d(TAG, "clearRequest: ");
-
-        confirmationIdText.setText("Confirmation Code: Press 'ADD' to create");
-        destinationText.setText("No Location Received");
-
-        if(currentRequest == null) {
-            return;
-        }
-        if(deliveryRequest != null && currentRequest != null  && currentRequest.containsKey("netid")) {
-            deliveryRequest.child(currentRequest.get("netid")).setValue(null);
-            currentRequest = null;
-        }
-        else
-            setResultToToast("Not Cleared Properly");
-    }
-
-    private void chooseCommandLocation() {
-        LinearLayout commandLocationSettings = (LinearLayout)getLayoutInflater().inflate(R.layout.command_choice_activity, null);
-        Button psafeBtn = (Button) commandLocationSettings.findViewById(R.id.psafeBtn);
-        Button fristBtn = (Button) commandLocationSettings.findViewById(R.id.fristBtn);
-        psafeBtn.setOnClickListener(this);
-        fristBtn.setOnClickListener(this);
-
-        new AlertDialog.Builder(this)
-                .setTitle("")
-                .setView(commandLocationSettings)
-                .setPositiveButton("Done",new DialogInterface.OnClickListener(){
-                    public void onClick(DialogInterface dialog, int id) {
-                    }
-                })
-                .create()
-                .show();
-    }
-
-    private void returnDroneHome() {
-        LatLng commandBase = getPointFromString(commandLocText, commandLocations);
-        markWaypoint(commandBase);
-        Waypoint mWaypoint = new Waypoint(commandBase.latitude, commandBase.longitude, altitude);
-        Waypoint mWaypoint2 = new Waypoint(commandBase.latitude, (commandBase.longitude + 0.000025), altitude);
-        //Add Waypoints to Waypoint arraylist but only one point should be stored
-        waypointMissionBuilder = (waypointMissionBuilder == null) ? new WaypointMission.Builder() : waypointMissionBuilder;
-        waypointList.add(mWaypoint);
-        waypointList.add(mWaypoint2);
-        waypointMissionBuilder.waypointList(waypointList).waypointCount(waypointList.size());
-
-        setResultToToast("Return Home Mission Created");
-    }
-
+    // Set next waypoint to user's location and add marker to map
     private void addDestination() {
+        // no requests present currently in firebase
         if(currentRequest == null) {
             destinationText.setText("No Location Received");
             setResultToToast("No Active Drone Request");
@@ -521,12 +466,16 @@ public class MainActivity extends FragmentActivity implements View.OnClickListen
             Log.d(TAG, "addDestination: location not found!");
             return;
         }
-        if (isAdd == true && destAdded == false){
+        if (isAdd && !destAdded){
             destAdded = true;
             markWaypoint(point);
             LatLng commandBase = getPointFromString(commandLocText, commandLocations);
 
-            Waypoint mWaypoint = new Waypoint((point.latitude + commandBase.latitude)/2.0, (point.longitude + commandBase.longitude)/2.0, altitude);
+            // create a waypoint at halfway point (single waypoint dist cannot be > 500meters)
+            /*Waypoint mWaypoint = new Waypoint((point.latitude + commandBase.latitude)/2.0,
+                    (point.longitude + commandBase.longitude)/2.0, altitude);*/
+            LatLng halfPoint = midPoint(droneLocation.latitude, droneLocation.longitude, point.latitude, point.longitude);
+            Waypoint mWaypoint = new Waypoint(halfPoint.latitude, halfPoint.longitude, altitude);
             Waypoint mWaypoint2 = new Waypoint(point.latitude, point.longitude, altitude);
 
             //Add Waypoints to Waypoint arraylist
@@ -534,66 +483,62 @@ public class MainActivity extends FragmentActivity implements View.OnClickListen
             waypointList.add(mWaypoint);
             waypointList.add(mWaypoint2);
             waypointMissionBuilder.waypointList(waypointList).waypointCount(waypointList.size());
-
+            if(returning)
+                mFinishedAction = WaypointMissionFinishedAction.AUTO_LAND;
+            else
+                mFinishedAction = WaypointMissionFinishedAction.NO_ACTION;
         }else{
             setResultToToast("Cannot Add Waypoint");
         }
         if(!currentRequest.get("code").equals("null"))
             return;
-        int idCode = (int)Math.round(1000 + Math.random()*9000); // create a 4 digit code
+        // generate a 4 digit delivery code (to be added to user's package)
+        int idCode = (int)Math.round(1000 + Math.random()*9000);
         confirmationIdText.setText("Confirmation Code: " + (int)idCode);
 
         createRequestNode(currentRequest.get("netid"), String.valueOf(idCode), currentRequest.get("identity"),
                 currentRequest.get("droplocation"), droneLocation.latitude, droneLocation.longitude, Long.toString(System.currentTimeMillis()));
     }
 
-    private double latlngToMeters(double lat1, double lon1, double lat2, double lon2){  // generally used geo measurement function
-        double R = 6378.137; // Radius of earth in KM
-        double dLat = lat2 * Math.PI / 180 - lat1 * Math.PI / 180;
-        double dLon = lon2 * Math.PI / 180 - lon1 * Math.PI / 180;
-        double a = Math.sin(dLat/2) * Math.sin(dLat/2) +
-                Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-                        Math.sin(dLon/2) * Math.sin(dLon/2);
-        double c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-        double d = R * c;
-        return d * 1000; // meters
-    }
+    // Update the drone location on the google map
+    // Update the drone location in the firebase database
+    // begin humanID phase if drone is close enough to intended destination
+    private void updateDroneLocation(){
+        //Create MarkerOptions object
+        final MarkerOptions markerOptions = new MarkerOptions();
+        markerOptions.position(droneLocation);
+        markerOptions.icon(BitmapDescriptorFactory.fromResource(R.drawable.box_package));
 
-
-    private LatLng getPointFromString(String destText, String[][] locations) {
-        //Log.d(TAG, "getPointFromString: " + destText);
-        for(String[] loc : locations) {
-            if(destText.equals(loc[0])) {
-                return new LatLng(Double.parseDouble(loc[1]), Double.parseDouble(loc[2]));
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                if (droneMarker != null) {
+                    droneMarker.remove();
+                }
+                if (checkGpsCoordination(droneLocation.latitude, droneLocation.longitude)) {
+                    droneMarker = gMap.addMarker(markerOptions);
+                }
+            }
+        });
+        if(deliveryRequest != null && currentRequest != null  && currentRequest.containsKey("netid") && droneLocation != null) {
+            deliveryRequest.child(currentRequest.get("netid")).child("dronelocationlat").setValue(Double.toString(droneLocation.latitude));
+            deliveryRequest.child(currentRequest.get("netid")).child("dronelocationlng").setValue(Double.toString(droneLocation.longitude));
+        }
+        if(currentRequest != null && currentRequest.containsKey("droplocation") && droneLocation != null) {
+            LatLng droplocation = getPointFromString(currentRequest.get("droplocation"), pickUpSpots);
+            if (closeEnoughForHumanID(droplocation, droneLocation) && idCount < 2) {
+                idCount++;
+                humanID(droneLocation);
             }
         }
-        return new LatLng(0,0);
     }
 
-    private void cameraUpdate(){
-        float zoomlevel = (float) 18.0;
-        CameraUpdate cu = CameraUpdateFactory.newLatLngZoom(droneLocation, zoomlevel);
-        gMap.moveCamera(cu);
-
-    }
-
-    private void enableDisableAdd(){
-        if (isAdd == false) {
-            isAdd = true;
-        }else{
-            isAdd = false;
-            add.setText("Add");
-        }
-    }
-
+    // Handle configuration setting of speed and altitude set by command and then upload mission
     private void showSettingDialog(){
         LinearLayout wayPointSettings = (LinearLayout)getLayoutInflater().inflate(R.layout.dialog_waypointsetting, null);
-
         final TextView wpAltitude_TV = (TextView) wayPointSettings.findViewById(R.id.altitude);
         RadioGroup speed_RG = (RadioGroup) wayPointSettings.findViewById(R.id.speed);
-
         speed_RG.setOnCheckedChangeListener(new RadioGroup.OnCheckedChangeListener(){
-
             @Override
             public void onCheckedChanged(RadioGroup group, int checkedId) {
                 if (checkedId == R.id.lowSpeed){
@@ -604,100 +549,76 @@ public class MainActivity extends FragmentActivity implements View.OnClickListen
                     mSpeed = 10.0f;
                 }
             }
-
         });
 
         // have drone hover in order to do custom human ID verification prior to land
-        mFinishedAction = WaypointMissionFinishedAction.NO_ACTION;
+        if(returning)
+            mFinishedAction = WaypointMissionFinishedAction.AUTO_LAND;
+        else
+            mFinishedAction = WaypointMissionFinishedAction.NO_ACTION;
         mHeadingMode = WaypointMissionHeadingMode.AUTO;
 
         new AlertDialog.Builder(this)
-                .setTitle("")
-                .setView(wayPointSettings)
-                .setPositiveButton("Finish",new DialogInterface.OnClickListener(){
-                    public void onClick(DialogInterface dialog, int id) {
+            .setTitle("").setView(wayPointSettings)
+            .setPositiveButton("Finish",new DialogInterface.OnClickListener(){
+                public void onClick(DialogInterface dialog, int id) {
 
-                        String altitudeString = wpAltitude_TV.getText().toString();
-                        altitude = Integer.parseInt(nulltoIntegerDefalt(altitudeString));
-                        // drone always higher than lewis library (3rd highest building on campus)
-                        altitude = Math.max(altitude, 40.0f);
-                        Log.e(TAG,"altitude "+altitude);
-                        Log.e(TAG,"speed "+mSpeed);
-                        Log.e(TAG, "mFinishedAction "+mFinishedAction);
-                        Log.e(TAG, "mHeadingMode "+mHeadingMode);
-                        configWayPointMission();
-                        uploadWayPointMission();
-                    }
-
-                })
-                .setNegativeButton("Cancel", new DialogInterface.OnClickListener() {
-                    public void onClick(DialogInterface dialog, int id) {
-                        dialog.cancel();
-                    }
-
-                })
-                .create()
-                .show();
+                    String altitudeString = wpAltitude_TV.getText().toString();
+                    altitude = Integer.parseInt(nulltoIntegerDefault(altitudeString));
+                    // drone always higher than lewis library (3rd highest building on campus)
+                    altitude = Math.max(altitude, 40.0f);
+                    configWayPointMission();
+                    uploadWayPointMission();
+                }
+            })
+            .setNegativeButton("Cancel", new DialogInterface.OnClickListener() {
+                public void onClick(DialogInterface dialog, int id) {
+                    dialog.cancel();
+                }
+            }).create().show();
     }
 
-    private String nulltoIntegerDefalt(String value){
-        if(!isIntValue(value)) value="0";
-        return value;
-    }
-
-    private boolean isIntValue(String val)
-    {
-        try {
-            val=val.replace(" ","");
-            Integer.parseInt(val);
-        } catch (Exception e) {return false;}
-        return true;
-    }
-
-    private void configWayPointMission(){
+    // Set next waypoint to command's home base location and add marker to map
+    private void returnDroneHome() {
+        LatLng commandBase = getPointFromString(commandLocText, commandLocations);
+        markWaypoint(commandBase);
+        LatLng halfPoint = midPoint(droneLocation.latitude, droneLocation.longitude, commandBase.latitude, commandBase.longitude);
+        Waypoint mWaypoint = new Waypoint(halfPoint.latitude, halfPoint.longitude, altitude);
+        Waypoint mWaypoint2 = new Waypoint(commandBase.latitude, commandBase.longitude, altitude);
+        //Add Waypoints to Waypoint arraylist but only one point should be stored
         waypointMissionBuilder = (waypointMissionBuilder == null) ? new WaypointMission.Builder() : waypointMissionBuilder;
-        waypointMissionBuilder.finishedAction(mFinishedAction)
-                .headingMode(mHeadingMode)
-                .autoFlightSpeed(mSpeed)
-                .maxFlightSpeed(mSpeed)
-                .flightPathMode(WaypointMissionFlightPathMode.NORMAL);
-
-        if (waypointMissionBuilder.getWaypointList().size() > 0){
-            Log.d(TAG, "configWayPointMission: " + waypointMissionBuilder.getWaypointList().size());
-            for (int i=0; i<waypointMissionBuilder.getWaypointList().size(); i++){
-                waypointMissionBuilder.getWaypointList().get(i).altitude = altitude;
-            }
-
-            setResultToToast("Set Waypoint attitude successfully");
-        }
-
-        DJIError error = getWaypointMissionOperator().loadMission(waypointMissionBuilder.build());
-        if (error == null) {
-            setResultToToast("loadWaypoint succeeded");
-        } else {
-            setResultToToast("loadWaypoint failed " + error.getDescription());
-            Log.d(TAG, "configWayPointMission: " + error.getDescription());
-        }
+        waypointList.add(mWaypoint);
+        waypointList.add(mWaypoint2);
+        waypointMissionBuilder.waypointList(waypointList).waypointCount(waypointList.size());
+        returning = true;
+        mFinishedAction = WaypointMissionFinishedAction.AUTO_LAND;
+        setResultToToast("Return Home Mission Created");
     }
 
-    private void uploadWayPointMission(){
-        getWaypointMissionOperator().uploadMission(new CommonCallbacks.CompletionCallback() {
+    // End the current waypoint mission
+    private void stopWaypointMission(){
+        getWaypointMissionOperator().stopMission(new CommonCallbacks.CompletionCallback() {
             @Override
             public void onResult(DJIError error) {
-                if (error == null) {
-                    setResultToToast("Mission upload successfully!");
-                } else {
-                    setResultToToast("Mission upload failed, error: " + error.getDescription() + " retrying...");
-                    getWaypointMissionOperator().retryUploadMission(null);
-                    Log.d("upload", error.getDescription());
+                if(error == null)
+                {
+                    isStart = false;
+                    start.setText("Start");
                 }
+                else
+                {
+                    isStart = true;
+                    start.setText("Stop");
+                }
+                setResultToToast("Mission Stop: " + (error == null ? "Successfully" : error.getDescription()));
+                if(error != null)
+                    Log.d("mission stop", error.getDescription());
             }
         });
-
     }
 
+    // Start the current waypoint mission
     private void startWaypointMission(){
-
         getWaypointMissionOperator().startMission(new CommonCallbacks.CompletionCallback() {
             @Override
             public void onResult(DJIError error) {
@@ -718,6 +639,45 @@ public class MainActivity extends FragmentActivity implements View.OnClickListen
         });
     }
 
+    // Clear a student request from the firebase database (after request is completed ideally)
+    private void clearRequest() {
+        // delete request from database
+        Log.d(TAG, "clearRequest: ");
+
+        confirmationIdText.setText("Confirmation Code: Press 'ADD' to create");
+        destinationText.setText("No Location Received");
+
+        if(currentRequest == null) {
+            return;
+        }
+        if(deliveryRequest != null && currentRequest.containsKey("netid")) {
+            deliveryRequest.child(currentRequest.get("netid")).setValue(null);
+            currentRequest = null;
+        }
+        else
+            setResultToToast("Not Cleared Properly");
+    }
+
+    // Choose command base's return location
+    private void chooseCommandLocation() {
+        LinearLayout commandLocationSettings = (LinearLayout)getLayoutInflater().inflate(R.layout.command_choice_activity, null);
+        Button psafeBtn = (Button) commandLocationSettings.findViewById(R.id.psafeBtn);
+        Button fristBtn = (Button) commandLocationSettings.findViewById(R.id.fristBtn);
+        Button rugbyBtn = (Button) commandLocationSettings.findViewById(R.id.rugbyBtn);
+        psafeBtn.setOnClickListener(this);
+        fristBtn.setOnClickListener(this);
+        rugbyBtn.setOnClickListener(this);
+
+        new AlertDialog.Builder(this)
+                .setTitle("").setView(commandLocationSettings)
+                .setPositiveButton("Done",new DialogInterface.OnClickListener(){
+                    public void onClick(DialogInterface dialog, int id) {
+                    }
+                }).create().show();
+    }
+
+    // Begin randomized custom flight path
+    // Drone flies in 1 of 4 shapes (line, triangle, square, zigzag)
     private void humanID(LatLng location) {
         stopWaypointMission();
         LEDsSettings.Builder ledSettingsBuilder = new LEDsSettings.Builder();
@@ -726,19 +686,15 @@ public class MainActivity extends FragmentActivity implements View.OnClickListen
         mFlightController.setLEDsEnabledSettings(ledSettingsBuilder.build(), new CommonCallbacks.CompletionCallback() {
             @Override
             public void onResult(DJIError error) {
-                //setResultToToast("LEDs Changed: " + (error == null ? "Successfully" : error.getDescription()));
-                if(error == null) {
-                    if(deliveryRequest != null && currentRequest != null  && currentRequest.containsKey("netid")) {
-                        deliveryRequest.child(currentRequest.get("netid")).child("lights").setValue("ALLOFF");
-                    }
-                    //else
-                        //setResultToToast("lights not changed");
+                if(error == null && deliveryRequest != null && currentRequest != null  && currentRequest.containsKey("netid")) {
+                    deliveryRequest.child(currentRequest.get("netid")).child("lights").setValue("ALLON");
                 }
             }
         });
 
         waypointMissionBuilder = (waypointMissionBuilder == null) ? new WaypointMission.Builder() : waypointMissionBuilder;
         int choice = (int)(Math.random() * shapes.length);
+        //int choice = 3;
         updateWaypoints(choice, location);
         waypointMissionBuilder.waypointList(waypointList).waypointCount(waypointList.size()).repeatTimes(3);
 
@@ -757,44 +713,7 @@ public class MainActivity extends FragmentActivity implements View.OnClickListen
             setResultToToast("Shape not set");
     }
 
-    private void customLand() {
-        float landHeight = (float)1.524; // 5ft height
-        LatLng dropLoc = getPointFromString(currentRequest.get("droplocation"), pickUpSpots);
-        waypointMissionBuilder = (waypointMissionBuilder == null) ? new WaypointMission.Builder() : waypointMissionBuilder;
-        waypointList.clear();
-        clearMap();
-        runOnUiThread(new Runnable() {
-            @Override
-            public void run() {
-                markWaypoint(new LatLng(dropLoc.latitude, dropLoc.longitude));
-            }
-        });
-        waypointList.add(new Waypoint(dropLoc.latitude, dropLoc.longitude, landHeight));
-        waypointMissionBuilder.waypointList(waypointList).waypointCount(waypointList.size());
-        sleep(1000);
-        DJIError error = getWaypointMissionOperator().loadMission(waypointMissionBuilder.build());
-        if (error == null) {
-            setResultToToast("loadWaypoint succeeded");
-        } else {
-            setResultToToast("loadWaypoint failed " + error.getDescription());
-        }
-        sleep(1000);
-        uploadWayPointMission();
-        sleep(1500);
-        startWaypointMission();
-    }
-
-    private void sleep(int secs) {
-        try
-        {
-            Thread.sleep(secs);
-        }
-        catch(InterruptedException ex)
-        {
-            Thread.currentThread().interrupt();
-        }
-    }
-
+    // Flight paths for the humanID function
     private void updateWaypoints(int x, LatLng loc) {
         waypointList.clear();
         clearMap();
@@ -852,7 +771,6 @@ public class MainActivity extends FragmentActivity implements View.OnClickListen
                 waypointList.add(new Waypoint((loc.latitude + 0.0001), loc.longitude, altitude));
                 waypointList.add(new Waypoint((loc.latitude + 0.0001), (loc.longitude + 0.0001), altitude));
                 waypointList.add(new Waypoint((loc.latitude + 0.0002), (loc.longitude + 0.0001), altitude));
-                waypointList.add(new Waypoint((loc.latitude + 0.0002), (loc.longitude + 0.0001), altitude));
                 waypointList.add(new Waypoint((loc.latitude + 0.0001), (loc.longitude + 0.0001), altitude));
                 waypointList.add(new Waypoint((loc.latitude + 0.0001), loc.longitude, altitude));
                 break;
@@ -861,60 +779,14 @@ public class MainActivity extends FragmentActivity implements View.OnClickListen
         }
     }
 
-    private void stopWaypointMission(){
-        getWaypointMissionOperator().stopMission(new CommonCallbacks.CompletionCallback() {
-            @Override
-            public void onResult(DJIError error) {
-                if(error == null)
-                {
-                    isStart = false;
-                    start.setText("Start");
-                }
-                else
-                {
-                    isStart = true;
-                    start.setText("Stop");
-                }
-                setResultToToast("Mission Stop: " + (error == null ? "Successfully" : error.getDescription()));
-                if(error != null)
-                    Log.d("mission stop", error.getDescription());
-            }
-        });
-
-    }
-
-    @Override
-    public void onMapReady(GoogleMap googleMap) {
-        if (gMap == null) {
-            gMap = googleMap;
-            setUpMap();
-        }
-    }
-
-    private void createRequestNode(String netid, String code, String identity, String droplocation, double lat, double lng, String time) {
-        netid = netid.replaceAll("\\.","");
-        deliveryRequest.child(netid).child("code").setValue(code);
-        deliveryRequest.child(netid).child("netid").setValue(netid);
-        deliveryRequest.child(netid).child("identity").setValue(identity);
-        deliveryRequest.child(netid).child("droplocation").setValue(droplocation);
-        deliveryRequest.child(netid).child("dronelocationlat").setValue(Double.toString(lat));
-        deliveryRequest.child(netid).child("dronelocationlng").setValue(Double.toString(lng));
-        deliveryRequest.child(netid).child("time").setValue(time);
-        deliveryRequest.child(netid).child("shape").setValue("null");
-    }
-
     @Override
     public void onDataChange(@NonNull DataSnapshot dataSnapshot) {
-        //Log.d("DRONE", "CHANGED");
         HashMap<String, HashMap<String, String>> users;
-
         if(dataSnapshot.getKey() != null) {
             users = (HashMap<String, HashMap<String, String>>) dataSnapshot.getValue();
             double oldest = Double.MAX_VALUE;
             for (Map.Entry<String, HashMap<String, String>> entry : users.entrySet()) {
                 HashMap<String, String> user = entry.getValue();
-                //Log.d(TAG, "onDataChange: " + currentRequest);
-                //Log.d(TAG, "onDataChange: " + user);
                 if(user != null && user.containsKey("netid") && user.containsKey("code") && user.containsKey("identity") && user.containsKey("droplocation")) {
                     if (currentRequest == null &&  (user.get("netid").equals("emptyuser") || user.get("netid").equals("emptyuser2"))) {
                         currentRequest = null;
@@ -925,17 +797,31 @@ public class MainActivity extends FragmentActivity implements View.OnClickListen
                     }
 
                     if (user.get("netid").equals(currentRequest.get("netid")) && (Double.parseDouble(user.get("time")) < oldest)) {
-                            currentRequest = user;
-                            oldest = Double.parseDouble(user.get("time"));
-                            destinationText.setText(user.toString());
+                        currentRequest = user;
+                        oldest = Double.parseDouble(user.get("time"));
+                        String codeTemp, shapeTemp, latTemp, lngTemp, netidTemp, idenTemp, timeTemp;
+                        try{codeTemp = user.get("code");}catch (Exception e){codeTemp = "null";}
+                        try{shapeTemp = user.get("shape");}catch (Exception e){shapeTemp = "null";}
+                        try{latTemp = user.get("dronelocationlat");}catch (Exception e){latTemp = "null";}
+                        try{lngTemp = user.get("dronelocationlng");}catch (Exception e){lngTemp = "null";}
+                        try{netidTemp = user.get("netid");}catch (Exception e){netidTemp = "null";}
+                        try{idenTemp = user.get("identity");}catch (Exception e){idenTemp = "null";}
+                        try{timeTemp = timeConvert(user.get("time"));}catch (Exception e){timeTemp = "null";}
+                        String userInfo = String.format("Code: %s Shape: %s\nLatitude: %s\nLongitude: %s\nNetID: %s\nIdentity: : %s\nTime: %s",
+                                codeTemp, shapeTemp, latTemp, lngTemp, netidTemp, idenTemp, timeTemp);
+                        destinationText.setText(userInfo);
                     }
                     if (user.get("netid").equals(currentRequest.get("netid")) && currentRequest.get("code").equals("0000")) {
                         confirmationIdText.setText("Package Recieved By Student");
+                        mFinishedAction = WaypointMissionFinishedAction.AUTO_LAND;
+                        returning = true;
                     }
+
                     if (user.containsKey("shape") && user.get("shape").equals("CONFIRMED")) {
+                        deliveryRequest.child(currentRequest.get("netid")).child("shape").setValue("LANDING");
                         stopWaypointMission();
-                        sleep(2000);
-                        customLand();
+                        sleep(3000);
+                        land();
                     } else if (user.containsKey("shape") && user.get("shape").equals("UNCONFIRMED")) {
                         stopWaypointMission();
                         setResultToToast("User failed to verify. Return Home.");
@@ -945,10 +831,223 @@ public class MainActivity extends FragmentActivity implements View.OnClickListen
         }
     }
 
-    @Override
-    public void onCancelled(@NonNull DatabaseError databaseError) {
+    // land the drone and end mission
+    private void land() {
+        clearMap();
+        waypointList.clear();
+        LatLng location = getPointFromString(currentRequest.get("droplocation"), pickUpSpots);
+        markWaypoint(location);
+        //LatLng halfPoint = midPoint(droneLocation.latitude, droneLocation.longitude, location.latitude, location.longitude);
+        Waypoint mWaypoint = new Waypoint(location.latitude, (location.longitude+0.00001), altitude);
+        Waypoint mWaypoint2 = new Waypoint(location.latitude, location.longitude, altitude);
+        //Add Waypoints to Waypoint arraylist but only one point should be stored
+        waypointMissionBuilder = (waypointMissionBuilder == null) ? new WaypointMission.Builder() : waypointMissionBuilder;
+        waypointList.add(mWaypoint);
+        waypointList.add(mWaypoint2);
+        waypointMissionBuilder.waypointList(waypointList).waypointCount(waypointList.size()).repeatTimes(0);
+        mFinishedAction = WaypointMissionFinishedAction.AUTO_LAND;
+
+        sleep(1000);
+        configWayPointMission();
+        sleep(1000);
+        uploadWayPointMission();
+        sleep(1500);
+        startWaypointMission();
+    }
+
+    //==============================================================================================
+    //
+    // Necessary DJI methods
+    //
+    //==============================================================================================
+
+    private void onProductConnectionChange()
+    {
+        initFlightController();
+        loginAccount();
+    }
+
+    // login to user account
+    private void loginAccount(){
+        UserAccountManager.getInstance().logIntoDJIUserAccount(this,
+                new CommonCallbacks.CompletionCallbackWith<UserAccountState>() {
+                    @Override
+                    public void onSuccess(final UserAccountState userAccountState) {
+                        Log.e(TAG, "Login Success");
+                    }
+                    @Override
+                    public void onFailure(DJIError error) {
+                        setResultToToast("Login Error:" + error.getDescription());
+                    }
+                });
+    }
+
+    // Initialize flight controller and constantly update drone location
+    private void initFlightController() {
+        BaseProduct product = DJIApplication.getProductInstance();
+        if (product != null && product.isConnected()) {
+            if (product instanceof Aircraft) {
+                mFlightController = ((Aircraft) product).getFlightController();
+            }
+        }
+
+        if (mFlightController != null) {
+            mFlightController.setStateCallback(new FlightControllerState.Callback() {
+
+                @Override
+                public void onUpdate(FlightControllerState djiFlightControllerCurrentState) {
+                    double droneLocationLat = djiFlightControllerCurrentState.getAircraftLocation().getLatitude();
+                    double droneLocationLng = djiFlightControllerCurrentState.getAircraftLocation().getLongitude();
+                    droneLocation = new LatLng(droneLocationLat, droneLocationLng);
+                    updateDroneLocation();
+                }
+            });
+        }
+        else
+        {
+            setResultToToast("controller error");
+        }
+    }
+
+    //Add Listener for WaypointMissionOperator
+    private void addListener() {
+        if (getWaypointMissionOperator() != null){
+            getWaypointMissionOperator().addListener(eventNotificationListener);
+        }
+    }
+
+    // Remove listener
+    private void removeListener() {
+        if (getWaypointMissionOperator() != null) {
+            getWaypointMissionOperator().removeListener(eventNotificationListener);
+        }
+    }
+
+    // Waypoint listener
+    private WaypointMissionOperatorListener eventNotificationListener = new WaypointMissionOperatorListener() {
+        @Override
+        public void onDownloadUpdate(WaypointMissionDownloadEvent downloadEvent) { }
+
+        @Override
+        public void onUploadUpdate(WaypointMissionUploadEvent uploadEvent) { }
+
+        @Override
+        public void onExecutionUpdate(WaypointMissionExecutionEvent executionEvent) { }
+
+        @Override
+        public void onExecutionStart() { }
+
+        @Override
+        public void onExecutionFinish(@Nullable final DJIError error) {
+            setResultToToast("Execution finished: " + (error == null ? "Success!" : error.getDescription()));
+        }
+    };
+
+    //==============================================================================================
+    //
+    // Necessary Google Map methods
+    //
+    //==============================================================================================
+
+    // Get current waypoint operator instance
+    public WaypointMissionOperator getWaypointMissionOperator() {
+        if (instance == null) {
+            if (DJISDKManager.getInstance().getMissionControl() != null){
+                instance = DJISDKManager.getInstance().getMissionControl().getWaypointMissionOperator();
+            }
+        }
+        return instance;
+    }
+
+    // map listener
+    private void setUpMap() {
+        gMap.setOnMapClickListener(this);// add the listener for click for amap object
 
     }
+
+    // Don't allow user to add waypoints through the map
+    @Override
+    public void onMapClick(LatLng point) {
+        setResultToToast("Cannot Add Waypoint Manually");
+    }
+
+    // initialize map
+    @Override
+    public void onMapReady(GoogleMap googleMap) {
+        if (gMap == null) {
+            gMap = googleMap;
+            setUpMap();
+        }
+    }
+
+    //==============================================================================================
+    //
+    // Waypoint Helper Methods
+    //
+    //==============================================================================================
+
+    // Convert epoch to regular date/time
+    private String timeConvert(String epoch) {
+        if (epoch.equals("null"))
+            return "null";
+        Date date = new Date(Long.parseLong(epoch));
+        DateFormat format = new SimpleDateFormat("MM/dd/yyyy HH:mm:ss");
+        format.setTimeZone(TimeZone.getTimeZone("America/New_York"));
+        String formatted = format.format(date);
+        return formatted;
+    }
+
+    // Configure waypoint mission
+    private void configWayPointMission(){
+        waypointMissionBuilder = (waypointMissionBuilder == null) ? new WaypointMission.Builder() : waypointMissionBuilder;
+        waypointMissionBuilder.finishedAction(mFinishedAction)
+                .headingMode(mHeadingMode)
+                .autoFlightSpeed(mSpeed)
+                .maxFlightSpeed(mSpeed)
+                .flightPathMode(WaypointMissionFlightPathMode.NORMAL);
+
+        if (waypointMissionBuilder.getWaypointList().size() > 0){
+            Log.d(TAG, "configWayPointMission: " + waypointMissionBuilder.getWaypointList().size());
+            for (int i=0; i<waypointMissionBuilder.getWaypointList().size(); i++){
+                waypointMissionBuilder.getWaypointList().get(i).altitude = altitude;
+            }
+
+            setResultToToast("Set Waypoint attitude successfully");
+        }
+
+        DJIError error = getWaypointMissionOperator().loadMission(waypointMissionBuilder.build());
+        if (error == null) {
+            setResultToToast("loadWaypoint succeeded");
+        } else {
+            setResultToToast("loadWaypoint failed " + error.getDescription());
+            Log.d(TAG, "configWayPointMission: " + error.getDescription());
+        }
+    }
+
+    // Upload waypoint mission
+    private void uploadWayPointMission() {
+        getWaypointMissionOperator().uploadMission(new CommonCallbacks.CompletionCallback() {
+            @Override
+            public void onResult(DJIError error) {
+                if (error == null) {
+                    setResultToToast("Mission upload successfully!");
+                } else {
+                    setResultToToast("Mission upload failed, error: " + error.getDescription() + " retrying...");
+                    getWaypointMissionOperator().retryUploadMission(null);
+                    Log.d("upload", error.getDescription());
+                }
+            }
+        });
+    }
+
+    //==============================================================================================
+    //
+    // Firebase Helper Methods
+    //
+    //==============================================================================================
+
+    @Override
+    public void onCancelled(@NonNull DatabaseError databaseError) { }
 
     protected void onStart() {
         super.onStart();
